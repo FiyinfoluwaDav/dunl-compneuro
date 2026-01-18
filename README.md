@@ -1,6 +1,6 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/ambv/black)
 
-
+ 
 # Deconvolutional Unrolled Neural Learning (DUNL) for Computational Neuroscience
 
 This code is wrriten for this paper [https://www.cell.com/neuron/abstract/S0896-6273(25)00119-9](https://www.cell.com/neuron/abstract/S0896-6273(25)00119-9) published at Neuron.
@@ -12,6 +12,8 @@ Learning locally low-rank temporal representation from neural time series data.
 For clone: `git clone https://github.com/btolooshams/dunl-compneuro.git`
 
 For pip install: `pip install git+https://github.com/btolooshams/dunl-compneuro.git`
+
+## IMPORTANT: For requirement.txt, the == is not strict. Feel free to install a newer version. You should be fine as long as the Numpy and Torch are compatible for GPU usage.
 
 ### PATH
 
