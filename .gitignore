@@ -83,3 +83,6 @@
 
 # Deprecated code
 **/old
+
+# Virtual environment
+**/.venv/
