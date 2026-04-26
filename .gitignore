@@ -79,7 +79,6 @@
 
 # exclude data
 **/data
-**/results
 
 # Deprecated code
 **/old
