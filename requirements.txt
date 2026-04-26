@@ -2,7 +2,7 @@ configmypy==0.1.0
 h5py==3.10.0
 hillfit==0.1.7
 matplotlib>=3.8.0
-numpy==2.2.4
+numpy<2.0.0
 scikit_learn==1.3.2
 scipy==1.15.2
 tensorboardX==2.6.2.2
