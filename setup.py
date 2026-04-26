@@ -9,7 +9,7 @@ setup(
         'h5py',
         'hillfit',
         'matplotlib>=3.4.0',
-        'numpy=2.2.4',
+        'numpy<2.0.0',
         'scikit_learn',
         'scipy',
         'tensorboardX',
