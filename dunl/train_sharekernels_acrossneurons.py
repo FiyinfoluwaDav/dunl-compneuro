@@ -45,9 +45,10 @@ def init_params():
         #######
         # default="./dopamine_spiking_simulated_config.yaml"
     )
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
     params = vars(args)
-
+    import sys
+    sys.argv = [sys.argv[0]] + unknown
     return params
 
 
