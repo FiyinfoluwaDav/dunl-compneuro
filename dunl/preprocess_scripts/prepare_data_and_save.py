@@ -70,7 +70,7 @@ def init_params():
         default=2,  # local-deconv-calscenario-longtrial-structured-simulated
     )
 
-    parser.add_argument("--only_test", type=bool, default=True)
+    parser.add_argument("--only_test", type=bool, default=False)
 
     args = parser.parse_args()
     params = vars(args)
