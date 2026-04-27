@@ -3,7 +3,24 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { Activity, Settings, Database, Clock, Beaker, Download } from 'lucide-react';
 import './index.css';
 
-const API_URL = 'http://127.0.0.1:8000/api';
+const IS_DEMO = import.meta.env.VITE_DEMO_MODE === 'true';
+const BASE_PATH = import.meta.env.BASE_URL || '/';
+const API_URL = IS_DEMO ? `${BASE_PATH}demo_data` : 'http://127.0.0.1:8000/api';
+
+const apiFetch = async (endpoint) => {
+  if (!IS_DEMO) {
+    return fetch(`${API_URL}${endpoint}`);
+  }
+  let file = '';
+  if (endpoint === '/experiments') file = 'experiments.json';
+  else if (endpoint.includes('/config')) file = 'config.json';
+  else if (endpoint.includes('/checkpoints')) file = 'checkpoints.json';
+  else if (endpoint.includes('/loss')) file = 'loss.json';
+  else if (endpoint.includes('/kernels')) file = 'kernels.json';
+  else if (endpoint.includes('/reconstruction')) file = 'reconstruction.json';
+  
+  return fetch(`${API_URL}/${file}`);
+};
 
 const Heatmap = ({ data, title, colorMap = 'cyan' }) => {
   const canvasRef = useRef(null);
@@ -96,7 +113,7 @@ function App() {
 
   // Initial Fetch of experiments
   useEffect(() => {
-    fetch(`${API_URL}/experiments`)
+    apiFetch(`/experiments`)
       .then(res => res.json())
       .then(data => {
         setExperiments(data);
@@ -113,7 +130,7 @@ function App() {
     
     const interval = setInterval(async () => {
       try {
-        const checkpointsRes = await fetch(`${API_URL}/experiments/${activeExp}/checkpoints`);
+        const checkpointsRes = await apiFetch(`/experiments/${activeExp}/checkpoints`);
         const newCheckpoints = await checkpointsRes.json();
         const cpArray = Array.isArray(newCheckpoints) ? newCheckpoints : ['model_final.pt'];
         
@@ -140,7 +157,7 @@ function App() {
 
   const loadLoss = async (expId) => {
     try {
-      const res = await fetch(`${API_URL}/experiments/${expId}/loss`);
+      const res = await apiFetch(`/experiments/${expId}/loss`);
       if (res.ok) {
         const data = await res.json();
         // Assume 'loss/train' or 'loss/train_ae' is the key
@@ -157,7 +174,7 @@ function App() {
   const loadKernelsAndReconstruction = async (expId, checkpoint, trial = 0) => {
     try {
       // Load Kernels
-      const kernelsRes = await fetch(`${API_URL}/experiments/${expId}/kernels?checkpoint=${checkpoint}`);
+      const kernelsRes = await apiFetch(`/experiments/${expId}/kernels?checkpoint=${checkpoint}`);
       if (kernelsRes.ok) {
         const kernelsData = await kernelsRes.json();
         const numKernels = kernelsData.shape[0];
@@ -182,7 +199,7 @@ function App() {
       }
 
       // Load Reconstruction Data
-      const reconRes = await fetch(`${API_URL}/experiments/${expId}/reconstruction?checkpoint=${checkpoint}&trial_idx=${trial}`);
+      const reconRes = await apiFetch(`/experiments/${expId}/reconstruction?checkpoint=${checkpoint}&trial_idx=${trial}`);
       if (reconRes.ok) {
         const reconData = await reconRes.json();
         if (reconData.num_trials) setNumTrials(reconData.num_trials);
@@ -239,8 +256,8 @@ function App() {
     setLoading(true);
     try {
       const [configRes, checkpointsRes] = await Promise.all([
-        fetch(`${API_URL}/experiments/${expId}/config`),
-        fetch(`${API_URL}/experiments/${expId}/checkpoints`)
+        apiFetch(`/experiments/${expId}/config`),
+        apiFetch(`/experiments/${expId}/checkpoints`)
       ]);
       
       const configData = await configRes.json();
