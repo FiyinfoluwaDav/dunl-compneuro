@@ -6,8 +6,11 @@ import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+# Resolve project root based on this file's location
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Ensure the 'dunl' folder is in path so torch can load the model classes
-sys.path.append(os.path.join(os.getcwd(), 'dunl'))
+sys.path.append(os.path.join(ROOT_DIR, 'dunl'))
 
 app = FastAPI(title="DUNL Analytics API")
 
@@ -20,7 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-RESULTS_DIR = os.path.join(os.getcwd(), "results")
+RESULTS_DIR = os.path.join(ROOT_DIR, "results")
 
 @app.get("/api/experiments")
 def get_experiments():
@@ -61,15 +64,72 @@ def get_experiment_config(exp_id: str):
             
     return clean_params
 
+@app.get("/api/experiments/{exp_id}/loss")
+def get_experiment_loss(exp_id: str):
+    """Parses the Tensorboard log and returns the training loss curve."""
+    exp_dir = os.path.join(RESULTS_DIR, exp_id)
+    if not os.path.exists(exp_dir):
+        raise HTTPException(status_code=404, detail="Experiment not found")
+        
+    # Find the tfevents file
+    tfevent_files = [f.path for f in os.scandir(exp_dir) if f.is_file() and 'tfevents' in f.name]
+    if not tfevent_files:
+        raise HTTPException(status_code=404, detail="Tensorboard logs not found")
+        
+    tfevent_file = tfevent_files[0]
+    
+    try:
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        # Limit the size so it doesn't consume huge memory
+        ea = EventAccumulator(tfevent_file, size_guidance={'scalars': 1000})
+        ea.Reload()
+        
+        tags = ea.Tags()['scalars']
+        
+        data = {}
+        for tag in tags:
+            events = ea.Scalars(tag)
+            data[tag] = [{"step": e.step, "value": e.value} for e in events]
+            
+        return data
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Tensorboard package is not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse tensorboard logs: {str(e)}")
+
+@app.get("/api/experiments/{exp_id}/checkpoints")
+def get_experiment_checkpoints(exp_id: str):
+    """Returns a list of all model checkpoints (.pt files) for an experiment."""
+    model_dir = os.path.join(RESULTS_DIR, exp_id, "model")
+    if not os.path.exists(model_dir):
+        return []
+    
+    files = [f.name for f in os.scandir(model_dir) if f.is_file() and f.name.endswith(".pt")]
+    # Try to sort logically (epoch1.pt, epoch2.pt... final.pt)
+    def sort_key(name):
+        if "final" in name:
+            return float('inf')
+        # Extract number if possible
+        import re
+        match = re.search(r'\d+', name)
+        return int(match.group()) if match else 0
+        
+    files.sort(key=sort_key)
+    return files
+
 @app.get("/api/experiments/{exp_id}/kernels")
-def get_experiment_kernels(exp_id: str):
-    """Loads model_final.pt and returns the kernel weights as arrays."""
-    model_path = os.path.join(RESULTS_DIR, exp_id, "model", "model_final.pt")
+def get_experiment_kernels(exp_id: str, checkpoint: str = "model_final.pt"):
+    """Loads a specific model checkpoint and returns the kernel weights as arrays."""
+    # Prevent directory traversal attacks
+    checkpoint = os.path.basename(checkpoint)
+    model_path = os.path.join(RESULTS_DIR, exp_id, "model", checkpoint)
+    
     if not os.path.exists(model_path):
-        raise HTTPException(status_code=404, detail="Model not found")
+        raise HTTPException(status_code=404, detail=f"Checkpoint {checkpoint} not found")
         
     try:
-        model = torch.load(model_path, map_location=torch.device('cpu'))
+        # Pass weights_only=False to allow loading the custom model classes
+        model = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
         state_dict = model.state_dict()
         
         if 'H' not in state_dict:
@@ -85,6 +145,71 @@ def get_experiment_kernels(exp_id: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
+
+@app.get("/api/experiments/{exp_id}/reconstruction")
+def get_experiment_reconstruction(exp_id: str, checkpoint: str = "model_final.pt"):
+    """Loads model checkpoint and dataset, runs inference, returns data for Heatmaps and Sparse Codes."""
+    checkpoint = os.path.basename(checkpoint)
+    model_path = os.path.join(RESULTS_DIR, exp_id, "model", checkpoint)
+    
+    if not os.path.exists(model_path):
+        raise HTTPException(status_code=404, detail=f"Checkpoint {checkpoint} not found")
+        
+    try:
+        model = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
+        model.eval()
+        
+        params_path = os.path.join(RESULTS_DIR, exp_id, "params.pickle")
+        with open(params_path, "rb") as f:
+            params = pickle.load(f)
+            
+        data_paths = params.get("data_path", [])
+        if not data_paths:
+            raise Exception("No data_path found in params")
+            
+        rel_data_path = data_paths[0].replace("../", "")
+        abs_data_path = os.path.normpath(os.path.join(ROOT_DIR, rel_data_path))
+        
+        if not os.path.exists(abs_data_path):
+            raise Exception(f"Data file not found at {abs_data_path}")
+            
+        data = torch.load(abs_data_path, map_location=torch.device('cpu'), weights_only=False)
+        
+        y_all = data['y']
+        a_all = data['a']
+        
+        # We will use the first trial for visualization
+        trial_idx = 0
+        y_load = y_all[[trial_idx]].float()
+        a_load = a_all[[trial_idx]].float()
+        
+        # Reshape to (batch*neurons, 1, time) as expected by the model when sharing kernels
+        y = torch.reshape(y_load, (y_load.shape[0] * y_load.shape[1], 1, y_load.shape[2]))
+        a = torch.reshape(a_load, (a_load.shape[0] * a_load.shape[1], 1, a_load.shape[2]))
+        
+        with torch.no_grad():
+            x_est, a_est = model.encode(y, a)
+            yhat = model.decode(x_est, a_est)
+            
+        yhat_reshaped = torch.reshape(yhat, (y_load.shape[0], y_load.shape[1], y_load.shape[2]))
+        
+        model_distribution = params.get("model_distribution", "gaussian")
+        if model_distribution == "poisson":
+            rate = torch.exp(yhat_reshaped)
+        elif model_distribution == "binomial":
+            rate = torch.sigmoid(yhat_reshaped)
+        else:
+            rate = yhat_reshaped
+            
+        return {
+            "y": y_load[0].tolist(),
+            "rate": rate[0].tolist(),
+            "x": x_est[0].tolist()
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed reconstruction: {str(e)}")
 
 # Add a simple health check
 @app.get("/api/health")
