@@ -57,6 +57,9 @@ const Heatmap = ({ data, title, colorMap = 'cyan' }) => {
           width={800} 
           height={300} 
           style={{ 
+            position: 'absolute',
+            top: 0,
+            left: 0,
             width: '100%', 
             height: '100%', 
             border: '1px solid rgba(255,255,255,0.1)', 
