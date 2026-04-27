@@ -320,7 +320,7 @@ function App() {
     }
     
     // Check for SVG (Recharts)
-    const svgElement = chartPanel.querySelector('.chart-body svg') || chartPanel.querySelector('.recharts-wrapper svg');
+    const svgElement = chartPanel.querySelector('.recharts-wrapper > svg');
     if (svgElement) {
       if (!svgElement.getAttribute('xmlns')) {
         svgElement.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
