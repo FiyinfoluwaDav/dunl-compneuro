@@ -85,3 +85,9 @@
 
 # Virtual environment
 **/.venv/
+
+# Build artifacts
+**/dunl.egg-info/
+
+# Output logs
+out.json
