@@ -599,7 +599,7 @@ function App() {
                     <Download size={14} />
                   </button>
                 </div>
-                <div className="chart-body" style={{ flexDirection: 'column', gap: '15px', padding: '15px' }}>
+                <div className="chart-body" style={{ display: 'flex', flexDirection: 'column', gap: '15px', padding: '15px' }}>
                   {reconstruction ? (
                     <>
                       <div style={{ flex: 1, display: 'flex', gap: '15px' }}>
