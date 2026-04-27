@@ -17,7 +17,11 @@ const apiFetch = async (endpoint) => {
   else if (endpoint.includes('/checkpoints')) file = 'checkpoints.json';
   else if (endpoint.includes('/loss')) file = 'loss.json';
   else if (endpoint.includes('/kernels')) file = 'kernels.json';
-  else if (endpoint.includes('/reconstruction')) file = 'reconstruction.json';
+  else if (endpoint.includes('/reconstruction')) {
+    const urlParams = new URLSearchParams(endpoint.split('?')[1]);
+    const trial_idx = urlParams.get('trial_idx') || '0';
+    file = `reconstruction_${trial_idx}.json`;
+  }
   
   return fetch(`${API_URL}/${file}`);
 };

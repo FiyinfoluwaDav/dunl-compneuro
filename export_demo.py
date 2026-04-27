@@ -38,8 +38,15 @@ if exps:
     kernels = requests.get(f"{API_BASE}/experiments/{exp_id}/kernels?checkpoint={cp}").json()
     save_json("kernels.json", kernels)
     
-    # Reconstruction (Trial 0)
-    recon = requests.get(f"{API_BASE}/experiments/{exp_id}/reconstruction?checkpoint={cp}&trial_idx=0").json()
-    save_json("reconstruction.json", recon)
+    # Reconstruction
+    print("Exporting trial 0...")
+    recon_0 = requests.get(f"{API_BASE}/experiments/{exp_id}/reconstruction?checkpoint={cp}&trial_idx=0").json()
+    save_json("reconstruction_0.json", recon_0)
+    
+    num_trials = recon_0.get("num_trials", 1)
+    for t in range(1, num_trials):
+        print(f"Exporting trial {t}...")
+        recon_t = requests.get(f"{API_BASE}/experiments/{exp_id}/reconstruction?checkpoint={cp}&trial_idx={t}").json()
+        save_json(f"reconstruction_{t}.json", recon_t)
 
 print("Demo data exported successfully!")
