@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ScatterChart, Scatter, ZAxis } from 'recharts';
-import { Activity, Settings, Database, Clock, Beaker } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ScatterChart, Scatter, ZAxis, AreaChart, Area, BarChart, Bar, Cell } from 'recharts';
+import { Activity, Settings, Database, Clock, Beaker, Download } from 'lucide-react';
 import './index.css';
 
 const API_URL = 'http://127.0.0.1:8000/api';
@@ -38,6 +38,8 @@ const Heatmap = ({ data, title, colorMap = 'cyan' }) => {
         
         if (colorMap === 'cyan') {
           ctx.fillStyle = `rgba(0, 240, 255, ${intensity})`;
+        } else if (colorMap === 'yellow') {
+          ctx.fillStyle = `rgba(255, 238, 0, ${intensity})`;
         } else {
           ctx.fillStyle = `rgba(255, 0, 60, ${intensity})`;
         }
@@ -74,6 +76,13 @@ function App() {
   
   const [checkpoints, setCheckpoints] = useState([]);
   const [activeCheckpoint, setActiveCheckpoint] = useState('model_final.pt');
+  
+  const [trialIdx, setTrialIdx] = useState(0);
+  const [numTrials, setNumTrials] = useState(1);
+  const [activeKernel, setActiveKernel] = useState(null);
+  
+  const [currentTab, setCurrentTab] = useState('single-trial');
+  const [kernelSimilarity, setKernelSimilarity] = useState(null);
 
   const [config, setConfig] = useState(null);
   const [kernels, setKernels] = useState(null);
@@ -112,7 +121,7 @@ function App() {
           if (activeCheckpoint === checkpoints[checkpoints.length - 1] || activeCheckpoint === 'model_final.pt') {
             const latestCp = cpArray.includes('model_final.pt') ? 'model_final.pt' : cpArray[cpArray.length - 1];
             setActiveCheckpoint(latestCp);
-            loadKernelsAndReconstruction(activeExp, latestCp);
+            loadKernelsAndReconstruction(activeExp, latestCp, trialIdx);
           }
         }
         
@@ -124,7 +133,7 @@ function App() {
     }, 5000);
     
     return () => clearInterval(interval);
-  }, [activeExp, checkpoints, activeCheckpoint, isLive]);
+  }, [activeExp, checkpoints, activeCheckpoint, isLive, trialIdx]);
 
   const loadLoss = async (expId) => {
     try {
@@ -142,7 +151,7 @@ function App() {
     }
   };
 
-  const loadKernelsAndReconstruction = async (expId, checkpoint) => {
+  const loadKernelsAndReconstruction = async (expId, checkpoint, trial = 0) => {
     try {
       // Load Kernels
       const kernelsRes = await fetch(`${API_URL}/experiments/${expId}/kernels?checkpoint=${checkpoint}`);
@@ -161,37 +170,58 @@ function App() {
           chartData.push(dataPoint);
         }
         setKernels(chartData);
+        if (kernelsData.similarity_matrix) {
+          setKernelSimilarity(kernelsData.similarity_matrix);
+        }
       } else {
         setKernels(null);
+        setKernelSimilarity(null);
       }
 
       // Load Reconstruction Data
-      const reconRes = await fetch(`${API_URL}/experiments/${expId}/reconstruction?checkpoint=${checkpoint}`);
+      const reconRes = await fetch(`${API_URL}/experiments/${expId}/reconstruction?checkpoint=${checkpoint}&trial_idx=${trial}`);
       if (reconRes.ok) {
         const reconData = await reconRes.json();
+        if (reconData.num_trials) setNumTrials(reconData.num_trials);
         
         // Process X matrix into scatter format
         const numKernels = reconData.x.length;
         const timeLen = reconData.x[0].length;
         
-        const scatterData = [];
+        const scatterDataByKernel = [];
         for (let k = 0; k < numKernels; k++) {
+          const kernelData = [];
           for (let t = 0; t < timeLen; t++) {
             const val = Math.abs(reconData.x[k][t]);
             if (val > 0.001) { // Filter out negligible activations
-              scatterData.push({
+              kernelData.push({
                 time: t,
-                kernel: `Kernel ${k+1}`,
+                kernel: `Kernel_${k+1}`,
                 kernelIndex: k,
                 activation: val
               });
             }
           }
+          scatterDataByKernel.push(kernelData);
+        }
+        
+        let componentData = null;
+        if (reconData.components) {
+          componentData = [];
+          const compTimeLen = reconData.components[0].length;
+          for (let t=0; t < compTimeLen; t++) {
+            let pt = { time: t };
+            for (let k=0; k < reconData.components.length; k++) {
+              pt[`Kernel_${k+1}`] = reconData.components[k][t];
+            }
+            componentData.push(pt);
+          }
         }
         
         setReconstruction({
           ...reconData,
-          scatterData
+          scatterDataByKernel,
+          componentData
         });
       } else {
         setReconstruction(null);
@@ -223,8 +253,10 @@ function App() {
         
       setActiveCheckpoint(initialCheckpoint);
       
+      setTrialIdx(0);
+      setActiveKernel(null);
       await loadLoss(expId);
-      await loadKernelsAndReconstruction(expId, initialCheckpoint);
+      await loadKernelsAndReconstruction(expId, initialCheckpoint, 0);
     } catch (err) {
       console.error("Failed to load experiment data", err);
     } finally {
@@ -236,8 +268,73 @@ function App() {
     const cp = e.target.value;
     setActiveCheckpoint(cp);
     setLoading(true);
-    await loadKernelsAndReconstruction(activeExp, cp);
+    await loadKernelsAndReconstruction(activeExp, cp, trialIdx);
     setLoading(false);
+  };
+
+  const handleTrialChange = async (e) => {
+    const trial = parseInt(e.target.value);
+    setTrialIdx(trial);
+    setLoading(true);
+    await loadKernelsAndReconstruction(activeExp, activeCheckpoint, trial);
+    setLoading(false);
+  };
+
+  const exportChart = (e, filename) => {
+    const chartPanel = e.target.closest('.chart-panel');
+    if (!chartPanel) return;
+    
+    // Check for Canvas first (Heatmaps)
+    const canvases = chartPanel.querySelectorAll('canvas');
+    if (canvases.length > 0) {
+      const canvas = canvases[0];
+      const link = document.createElement('a');
+      link.href = canvas.toDataURL('image/png');
+      link.download = filename + '.png';
+      link.click();
+      return;
+    }
+    
+    // Check for SVG (Recharts)
+    const svgElement = chartPanel.querySelector('.chart-body svg') || chartPanel.querySelector('.recharts-wrapper svg');
+    if (svgElement) {
+      if (!svgElement.getAttribute('xmlns')) {
+        svgElement.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      }
+      
+      // We need to inline styles or just draw to canvas directly. Recharts usually uses inline fill/stroke.
+      const svgData = new XMLSerializer().serializeToString(svgElement);
+      const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        // Get dimensions
+        const rect = svgElement.getBoundingClientRect();
+        const scale = 2; // Export at higher resolution
+        canvas.width = rect.width * scale;
+        canvas.height = rect.height * scale;
+        
+        const ctx = canvas.getContext('2d');
+        ctx.scale(scale, scale);
+        
+        // Draw dark background since charts expect it
+        ctx.fillStyle = '#0c0c0c';
+        ctx.fillRect(0, 0, rect.width, rect.height);
+        
+        ctx.drawImage(img, 0, 0, rect.width, rect.height);
+        URL.revokeObjectURL(url);
+        
+        const pngUrl = canvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.href = pngUrl;
+        link.download = filename + '.png';
+        link.click();
+      };
+      img.src = url;
+      return;
+    }
   };
 
   const colors = ['#00f0ff', '#ff003c', '#ffee00', '#00ff66', '#bd00ff'];
@@ -258,6 +355,19 @@ function App() {
           ))}
           {experiments.length === 0 && <div style={{color: '#555', fontSize: '0.8rem'}}>No experiments found.</div>}
         </div>
+        
+        {config && (
+          <div className="provenance-panel" style={{marginTop: 'auto', borderTop: '1px solid #333', paddingTop: '20px'}}>
+            <h3 style={{fontSize: '0.8rem', color: '#888', textTransform: 'uppercase', marginBottom: '10px', letterSpacing: '1px'}}>Experiment Provenance</h3>
+            <div style={{fontSize: '0.7rem', color: '#ccc', maxHeight: '250px', overflowY: 'auto', background: 'rgba(0,0,0,0.3)', padding: '10px', borderRadius: '4px', fontFamily: 'monospace'}}>
+              {Object.keys(config).map(k => (
+                <div key={k} style={{marginBottom: '4px'}}>
+                  <strong style={{color: '#888'}}>{k}:</strong> {JSON.stringify(config[k])}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </aside>
 
       <main className="main-content">
@@ -292,6 +402,30 @@ function App() {
                 </select>
               </div>
 
+              {/* Trial Dropdown */}
+              <div className="stat-card" style={{ border: '1px solid rgba(255, 238, 0, 0.3)', background: 'rgba(255, 238, 0, 0.05)'}}>
+                <span className="stat-title" style={{color: '#ffee00'}}>Trial</span>
+                <select 
+                  value={trialIdx} 
+                  onChange={handleTrialChange}
+                  className="checkpoint-select"
+                >
+                  {[...Array(numTrials).keys()].map(t => (
+                    <option key={t} value={t}>Trial {t}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Metrics */}
+              <div className="stat-card" style={{ border: '1px solid rgba(189, 0, 255, 0.3)', background: 'rgba(189, 0, 255, 0.05)'}}>
+                <span className="stat-title" style={{color: '#bd00ff'}}><Activity size={14} style={{marginRight:'4px'}}/> Trial R²</span>
+                <span className="stat-value">{reconstruction?.metrics?.r2 ?? '-'}</span>
+              </div>
+              <div className="stat-card" style={{ border: '1px solid rgba(255, 0, 60, 0.3)', background: 'rgba(255, 0, 60, 0.05)'}}>
+                <span className="stat-title" style={{color: '#ff003c'}}><Activity size={14} style={{marginRight:'4px'}}/> Trial NLL</span>
+                <span className="stat-value">{reconstruction?.metrics?.nll ?? '-'}</span>
+              </div>
+
               {/* Live Toggle */}
               <div 
                 className="stat-card" 
@@ -313,13 +447,32 @@ function App() {
 
             {loading && <div className="global-loader"><div className="spinner"></div>Loading checkpoint data...</div>}
 
-            <div className="visualizer-grid">
-              
-              {/* Loss Curve */}
-              <div className="chart-panel">
-                <div className="chart-header">
-                  <span className="chart-title">Training Convergence (Loss)</span>
-                </div>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', borderBottom: '1px solid #333', paddingBottom: '10px' }}>
+              <button 
+                style={{ padding: '8px 16px', background: currentTab === 'single-trial' ? 'rgba(0, 240, 255, 0.1)' : 'transparent', border: currentTab === 'single-trial' ? '1px solid #00f0ff' : '1px solid #333', color: currentTab === 'single-trial' ? '#00f0ff' : '#888', borderRadius: '4px', cursor: 'pointer' }}
+                onClick={() => setCurrentTab('single-trial')}
+              >
+                Single-Trial View
+              </button>
+              <button 
+                style={{ padding: '8px 16px', background: currentTab === 'population' ? 'rgba(0, 255, 102, 0.1)' : 'transparent', border: currentTab === 'population' ? '1px solid #00ff66' : '1px solid #333', color: currentTab === 'population' ? '#00ff66' : '#888', borderRadius: '4px', cursor: 'pointer' }}
+                onClick={() => setCurrentTab('population')}
+              >
+                Population Analytics
+              </button>
+            </div>
+
+            {currentTab === 'single-trial' ? (
+              <div className="visualizer-grid">
+                
+                {/* Loss Curve */}
+                <div className="chart-panel">
+                  <div className="chart-header">
+                    <span className="chart-title">Training Convergence (Loss)</span>
+                    <button className="icon-btn" onClick={(e) => exportChart(e, 'loss_curve')} title="Export PNG">
+                      <Download size={14} />
+                    </button>
+                  </div>
                 <div className="chart-body">
                   {lossData ? (
                     <ResponsiveContainer width="100%" height="100%">
@@ -344,6 +497,9 @@ function App() {
               <div className="chart-panel">
                 <div className="chart-header">
                   <span className="chart-title">Learned Kernels ($H$)</span>
+                  <button className="icon-btn" onClick={(e) => exportChart(e, 'learned_kernels')} title="Export PNG">
+                    <Download size={14} />
+                  </button>
                 </div>
                 <div className="chart-body">
                   {kernels ? (
@@ -356,14 +512,15 @@ function App() {
                           contentStyle={{backgroundColor: 'rgba(12, 12, 12, 0.9)', border: '1px solid #333', borderRadius: '8px', backdropFilter: 'blur(10px)'}}
                           itemStyle={{color: '#fff'}}
                         />
-                        <Legend />
+                        <Legend onClick={(e) => setActiveKernel(activeKernel === e.dataKey ? null : e.dataKey)} wrapperStyle={{cursor: 'pointer'}} />
                         {Object.keys(kernels[0] || {}).filter(k => k !== 'time').map((key, idx) => (
                           <Line 
                             key={key} 
                             type="monotone" 
                             dataKey={key} 
                             stroke={colors[idx % colors.length]} 
-                            strokeWidth={2}
+                            strokeWidth={activeKernel === key ? 4 : 2}
+                            strokeOpacity={activeKernel === null || activeKernel === key ? 1 : 0.2}
                             dot={false}
                             activeDot={{ r: 6 }} 
                             isAnimationActive={false}
@@ -381,9 +538,12 @@ function App() {
               <div className="chart-panel">
                 <div className="chart-header">
                   <span className="chart-title">Sparse Representations ($X$)</span>
+                  <button className="icon-btn" onClick={(e) => exportChart(e, 'sparse_codes')} title="Export PNG">
+                    <Download size={14} />
+                  </button>
                 </div>
                 <div className="chart-body">
-                  {reconstruction?.scatterData ? (
+                  {reconstruction?.scatterDataByKernel ? (
                     <ResponsiveContainer width="100%" height="100%">
                       <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
@@ -391,7 +551,18 @@ function App() {
                         <YAxis type="category" dataKey="kernel" name="Kernel" stroke="#888" />
                         <ZAxis type="number" dataKey="activation" range={[10, 200]} name="Activation" />
                         <Tooltip cursor={{strokeDasharray: '3 3'}} contentStyle={{backgroundColor: 'rgba(12, 12, 12, 0.9)', border: '1px solid #333', borderRadius: '8px'}} />
-                        <Scatter data={reconstruction.scatterData} fill="#00ff66" shape="circle" />
+                        {reconstruction.scatterDataByKernel.map((data, idx) => {
+                          const kName = `Kernel_${idx+1}`;
+                          return (
+                            <Scatter 
+                              key={`scatter-${idx}`} 
+                              data={data} 
+                              fill={colors[idx % colors.length]} 
+                              shape="circle" 
+                              opacity={activeKernel === null || activeKernel === kName ? 1 : 0.1}
+                            />
+                          );
+                        })}
                       </ScatterChart>
                     </ResponsiveContainer>
                   ) : (
@@ -403,16 +574,26 @@ function App() {
               {/* Reconstructed Rate vs Ground Truth */}
               <div className="chart-panel" style={{ gridColumn: '1 / -1', minHeight: '400px' }}>
                 <div className="chart-header">
-                  <span className="chart-title">{"Raw Spikes ($Y$) vs Reconstructed Firing Rate ($\\hat{Y}$)"}</span>
+                  <span className="chart-title">{"Raw Spikes ($Y$) vs Reconstructed Firing Rate ($\\hat{Y}$) & Residuals"}</span>
+                  <button className="icon-btn" onClick={(e) => exportChart(e, 'raster_heatmap')} title="Export PNG">
+                    <Download size={14} />
+                  </button>
                 </div>
                 <div className="chart-body" style={{ flexDirection: 'column', gap: '15px', padding: '15px' }}>
                   {reconstruction ? (
                     <>
-                      <div style={{ flex: 1 }}>
-                        <Heatmap data={reconstruction.y} title="Ground-Truth Spikes (Raster Plot)" colorMap="cyan" />
+                      <div style={{ flex: 1, display: 'flex', gap: '15px' }}>
+                        <div style={{ flex: 1 }}>
+                          <Heatmap data={reconstruction.y} title="Ground-Truth Spikes (Raster Plot)" colorMap="cyan" />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <Heatmap data={reconstruction.rate} title="Model Reconstructed Firing Rate" colorMap="red" />
+                        </div>
                       </div>
                       <div style={{ flex: 1 }}>
-                        <Heatmap data={reconstruction.rate} title="Model Reconstructed Firing Rate" colorMap="red" />
+                        {reconstruction.residuals && (
+                          <Heatmap data={reconstruction.residuals} title="Residuals (Y - Ŷ)" colorMap="yellow" />
+                        )}
                       </div>
                     </>
                   ) : (
@@ -420,8 +601,100 @@ function App() {
                   )}
                 </div>
               </div>
+
+              {/* Decomposed Components Overlay */}
+              <div className="chart-panel" style={{ gridColumn: '1 / -1' }}>
+                <div className="chart-header">
+                  <span className="chart-title">Decomposed Components (Mean Kernel Contributions)</span>
+                  <button className="icon-btn" onClick={(e) => exportChart(e, 'decomposed_components')} title="Export PNG">
+                    <Download size={14} />
+                  </button>
+                </div>
+                <div className="chart-body">
+                  {reconstruction?.componentData ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={reconstruction.componentData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                        <XAxis dataKey="time" stroke="#888" tick={{fill: '#888'}} />
+                        <YAxis stroke="#888" tick={{fill: '#888'}} />
+                        <Tooltip 
+                          contentStyle={{backgroundColor: 'rgba(12, 12, 12, 0.9)', border: '1px solid #333', borderRadius: '8px', backdropFilter: 'blur(10px)'}}
+                          itemStyle={{color: '#fff'}}
+                        />
+                        <Legend onClick={(e) => setActiveKernel(activeKernel === e.dataKey ? null : e.dataKey)} wrapperStyle={{cursor: 'pointer'}} />
+                        {Object.keys(reconstruction.componentData[0] || {}).filter(k => k !== 'time').map((key, idx) => (
+                          <Area 
+                            key={key}
+                            type="monotone"
+                            dataKey={key}
+                            stackId="1"
+                            stroke={colors[idx % colors.length]}
+                            fill={colors[idx % colors.length]}
+                            fillOpacity={activeKernel === null || activeKernel === key ? 0.6 : 0.1}
+                            strokeOpacity={activeKernel === null || activeKernel === key ? 1 : 0.1}
+                            isAnimationActive={false}
+                          />
+                        ))}
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="empty-state">No component data available</div>
+                  )}
+                </div>
+              </div>
               
             </div>
+            ) : (
+              <div className="visualizer-grid">
+                {/* Kernel Similarity */}
+                <div className="chart-panel">
+                  <div className="chart-header">
+                    <span className="chart-title">Kernel Similarity (Cross-Correlation)</span>
+                    <button className="icon-btn" onClick={(e) => exportChart(e, 'kernel_similarity')} title="Export PNG">
+                      <Download size={14} />
+                    </button>
+                  </div>
+                  <div className="chart-body">
+                    {kernelSimilarity ? (
+                       <Heatmap data={kernelSimilarity} title="Kernel Cross-Correlation Matrix" colorMap="cyan" />
+                    ) : (
+                      <div className="empty-state">No similarity data available</div>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Code Amplitudes */}
+                <div className="chart-panel">
+                  <div className="chart-header">
+                    <span className="chart-title">Trial-Level Code Amplitudes (Sum of |X|)</span>
+                    <button className="icon-btn" onClick={(e) => exportChart(e, 'code_amplitudes')} title="Export PNG">
+                      <Download size={14} />
+                    </button>
+                  </div>
+                  <div className="chart-body">
+                     {reconstruction?.x ? (
+                       <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={reconstruction.x.map((val, idx) => ({ name: `Kernel_${idx+1}`, value: val }))} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+                            <XAxis dataKey="name" stroke="#888" tick={{fill: '#888'}} />
+                            <YAxis stroke="#888" tick={{fill: '#888'}} />
+                            <Tooltip cursor={{fill: 'rgba(255,255,255,0.05)'}} contentStyle={{backgroundColor: 'rgba(12, 12, 12, 0.9)', border: '1px solid #333', borderRadius: '8px'}} />
+                            <Bar dataKey="value" fill="#00f0ff">
+                              {
+                                reconstruction.x.map((entry, index) => (
+                                  <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
+                                ))
+                              }
+                            </Bar>
+                          </BarChart>
+                       </ResponsiveContainer>
+                     ) : (
+                       <div className="empty-state">No amplitude data available</div>
+                     )}
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         )}
       </main>

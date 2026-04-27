@@ -139,15 +139,21 @@ def get_experiment_kernels(exp_id: str, checkpoint: str = "model_final.pt"):
         kernels_tensor = state_dict['H'].detach().cpu()
         kernels_list = kernels_tensor.numpy().tolist()
         
+        # Compute Kernel Similarity Matrix (Cross-correlation)
+        H_sq = kernels_tensor.squeeze(1) # (K, T)
+        H_norm = torch.nn.functional.normalize(H_sq, p=2, dim=1)
+        sim_matrix = torch.matmul(H_norm, H_norm.T).numpy().tolist()
+        
         return {
             "kernels": kernels_list,
-            "shape": list(kernels_tensor.shape)
+            "shape": list(kernels_tensor.shape),
+            "similarity_matrix": sim_matrix
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load model: {str(e)}")
 
 @app.get("/api/experiments/{exp_id}/reconstruction")
-def get_experiment_reconstruction(exp_id: str, checkpoint: str = "model_final.pt"):
+def get_experiment_reconstruction(exp_id: str, checkpoint: str = "model_final.pt", trial_idx: int = 0):
     """Loads model checkpoint and dataset, runs inference, returns data for Heatmaps and Sparse Codes."""
     checkpoint = os.path.basename(checkpoint)
     model_path = os.path.join(RESULTS_DIR, exp_id, "model", checkpoint)
@@ -178,8 +184,7 @@ def get_experiment_reconstruction(exp_id: str, checkpoint: str = "model_final.pt
         y_all = data['y']
         a_all = data['a']
         
-        # We will use the first trial for visualization
-        trial_idx = 0
+        # We will use the requested trial for visualization
         y_load = y_all[[trial_idx]].float()
         a_load = a_all[[trial_idx]].float()
         
@@ -191,6 +196,18 @@ def get_experiment_reconstruction(exp_id: str, checkpoint: str = "model_final.pt
             x_est, a_est = model.encode(y, a)
             yhat = model.decode(x_est, a_est)
             
+            # Decompose by kernel
+            num_kernels = x_est.shape[1]
+            components = []
+            for k in range(num_kernels):
+                x_k = torch.zeros_like(x_est)
+                x_k[:, k, :] = x_est[:, k, :]
+                yhat_k = model.decode(x_k, torch.zeros_like(a_est))
+                yhat_k_reshaped = torch.reshape(yhat_k, (y_load.shape[0], y_load.shape[1], y_load.shape[2]))
+                # Average across neurons to get a 1D trace for the whole trial
+                comp_trace = yhat_k_reshaped[0].mean(dim=0).tolist()
+                components.append(comp_trace)
+            
         yhat_reshaped = torch.reshape(yhat, (y_load.shape[0], y_load.shape[1], y_load.shape[2]))
         
         model_distribution = params.get("model_distribution", "gaussian")
@@ -201,10 +218,36 @@ def get_experiment_reconstruction(exp_id: str, checkpoint: str = "model_final.pt
         else:
             rate = yhat_reshaped
             
+        residuals = (y_load - rate)[0].tolist()
+        
+        # Calculate Quantitative Metrics
+        ss_res = torch.sum((y_load - rate) ** 2).item()
+        ss_tot = torch.sum((y_load - y_load.mean()) ** 2).item()
+        r2 = 1 - (ss_res / (ss_tot + 1e-8))
+        
+        if model_distribution == "poisson":
+            nll = torch.sum(rate - y_load * torch.log(rate + 1e-8)).item()
+        elif model_distribution == "binomial":
+            nll = -torch.sum(y_load * torch.log(rate + 1e-8) + (1 - y_load) * torch.log(1 - rate + 1e-8)).item()
+        else:
+            nll = 0.5 * ss_res
+            
+        metrics = {
+            "r2": round(r2, 4),
+            "nll": round(nll, 4)
+        }
+        
+        # Aggregate non-zero codes across all neurons for the trial-level scatter plot
+        x_trial = x_est.abs().sum(dim=0).tolist()
+            
         return {
             "y": y_load[0].tolist(),
             "rate": rate[0].tolist(),
-            "x": x_est[0].tolist()
+            "residuals": residuals,
+            "components": components,
+            "x": x_trial,
+            "num_trials": y_all.shape[0],
+            "metrics": metrics
         }
     except Exception as e:
         import traceback
